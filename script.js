@@ -367,31 +367,48 @@ let timerInterval = null;
 let screenRecording = false;
 let blurCount = 0;
 let violationTriggered = false;
+let isRequestingScreenShare = false; // New flag to prevent false suspension
+let examCheckComplete = false; // New flag to ensure exam check completes first
 
 // ==================== PROCTORING FUNCTIONS ====================
 
 // Start screen recording
 function startScreenRecording() {
+    // Set flag to indicate we're requesting screen share
+    isRequestingScreenShare = true;
+    
     if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
         navigator.mediaDevices.getDisplayMedia({ video: true })
             .then(stream => {
                 screenRecording = true;
                 console.log('Screen recording started');
                 
+                // Clear the requesting flag after permission is granted
+                isRequestingScreenShare = false;
+                examCheckComplete = true;
+                
                 // Stop recording when stream ends (user clicks "Stop Sharing")
                 stream.getVideoTracks()[0].onended = function() {
                     screenRecording = false;
-                    if (examStarted && !examSuspended) {
+                    if (examStarted && !examSuspended && examCheckComplete) {
                         suspendExam('Screen sharing was stopped');
                     }
                 };
             })
             .catch(err => {
                 console.error('Screen recording failed:', err);
+                // Clear the requesting flag after permission is denied
+                isRequestingScreenShare = false;
+                examCheckComplete = true;
+                
                 // Continue without recording but warn
                 alert('Warning: Screen recording could not be started. The exam will continue without recording.');
             });
     } else {
+        // Clear the requesting flag if not supported
+        isRequestingScreenShare = false;
+        examCheckComplete = true;
+        
         alert('Warning: Screen recording is not supported in this browser. The exam will continue without recording.');
     }
 }
@@ -399,6 +416,12 @@ function startScreenRecording() {
 // Suspend exam for violation
 function suspendExam(reason) {
     if (examSuspended) return;
+    
+    // Don't suspend if we're currently requesting screen share
+    if (isRequestingScreenShare) {
+        console.log('Ignoring suspension during screen share request');
+        return;
+    }
     
     examSuspended = true;
     violationTriggered = true;
@@ -421,7 +444,7 @@ function suspendExam(reason) {
 
 // Check for tab visibility change
 document.addEventListener('visibilitychange', function() {
-    if (examStarted && document.hidden && !examSuspended) {
+    if (examStarted && document.hidden && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
         blurCount++;
         suspendExam('Tab switching detected');
     }
@@ -429,10 +452,10 @@ document.addEventListener('visibilitychange', function() {
 
 // Check for window blur (losing focus)
 window.addEventListener('blur', function() {
-    if (examStarted && !examSuspended) {
+    if (examStarted && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
         // Small delay to allow for alert dialogs
         setTimeout(() => {
-            if (!document.hasFocus() && examStarted && !examSuspended) {
+            if (!document.hasFocus() && examStarted && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
                 blurCount++;
                 suspendExam('Window lost focus');
             }
@@ -509,8 +532,11 @@ function startExam() {
     // Start screen recording
     startScreenRecording();
     
-    // Start timer
-    startTimer();
+    // Start timer only after screen recording check
+    setTimeout(() => {
+        startTimer();
+        examCheckComplete = true;
+    }, 1000); // Give 1 second for screen recording to initialize
     
     // Initialize exam
     renderQuestion();
