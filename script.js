@@ -367,14 +367,16 @@ let timerInterval = null;
 let screenRecording = false;
 let blurCount = 0;
 let violationTriggered = false;
-let isRequestingScreenShare = false; // New flag to prevent false suspension
-let examCheckComplete = false; // New flag to ensure exam check completes first
+let isRequestingScreenShare = false;
+let examActive = false;
+let screenShareCheckComplete = false;
+let blurCheckTimeout = null;
+let readinessCheckPassed = false; // New flag for readiness check
 
 // ==================== PROCTORING FUNCTIONS ====================
 
-// Start screen recording
+// Start screen recording (called during readiness check)
 function startScreenRecording() {
-    // Set flag to indicate we're requesting screen share
     isRequestingScreenShare = true;
     
     if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
@@ -382,44 +384,87 @@ function startScreenRecording() {
             .then(stream => {
                 screenRecording = true;
                 console.log('Screen recording started');
-                
-                // Clear the requesting flag after permission is granted
                 isRequestingScreenShare = false;
-                examCheckComplete = true;
+                screenShareCheckComplete = true;
+                
+                // Show readiness check screen
+                showReadinessCheck();
                 
                 // Stop recording when stream ends (user clicks "Stop Sharing")
                 stream.getVideoTracks()[0].onended = function() {
                     screenRecording = false;
-                    if (examStarted && !examSuspended && examCheckComplete) {
+                    if (examActive && !examSuspended) {
                         suspendExam('Screen sharing was stopped');
                     }
                 };
             })
             .catch(err => {
                 console.error('Screen recording failed:', err);
-                // Clear the requesting flag after permission is denied
                 isRequestingScreenShare = false;
-                examCheckComplete = true;
+                screenShareCheckComplete = true;
                 
-                // Continue without recording but warn
-                alert('Warning: Screen recording could not be started. The exam will continue without recording.');
+                // Still show readiness check even if recording fails
+                showReadinessCheck();
             });
     } else {
-        // Clear the requesting flag if not supported
         isRequestingScreenShare = false;
-        examCheckComplete = true;
+        screenShareCheckComplete = true;
         
-        alert('Warning: Screen recording is not supported in this browser. The exam will continue without recording.');
+        // Show readiness check even if not supported
+        showReadinessCheck();
     }
+}
+
+// Show readiness check screen
+function showReadinessCheck() {
+    // Create readiness check modal dynamically
+    const readinessModal = document.createElement('div');
+    readinessModal.id = 'readinessModal';
+    readinessModal.className = 'modal-overlay active';
+    readinessModal.innerHTML = `
+        <div class="modal-content">
+            <div class="icon">✅</div>
+            <h2>Exam Readiness Check</h2>
+            <p style="margin-bottom: 20px;">Please verify the following before starting the exam:</p>
+            <div style="text-align: left; margin-bottom: 30px; padding: 20px; background: #f8f9fa; border-radius: 10px;">
+                <p style="margin-bottom: 10px;">✓ Screen recording: ${screenRecording ? 'Active' : 'Not available'}</p>
+                <p style="margin-bottom: 10px;">✓ Exam duration: 90 minutes</p>
+                <p style="margin-bottom: 10px;">✓ Questions: 60 items</p>
+                <p style="margin-bottom: 10px;">✓ Proctoring: Enabled</p>
+                <p style="margin-bottom: 10px;">✓ Tab switching detection: Active</p>
+            </div>
+            <p style="margin-bottom: 30px; font-weight: bold; color: #e74c3c;">⚠️ Do not switch tabs or windows during the exam!</p>
+            <button class="btn btn-success" onclick="beginExamAfterCheck()">Begin Exam</button>
+        </div>
+    `;
+    
+    document.body.appendChild(readinessModal);
+}
+
+// Begin exam after readiness check
+function beginExamAfterCheck() {
+    // Remove readiness modal
+    const readinessModal = document.getElementById('readinessModal');
+    if (readinessModal) {
+        readinessModal.remove();
+    }
+    
+    readinessCheckPassed = true;
+    examActive = true;
+    
+    // Start timer
+    startTimer();
+    
+    console.log('Exam is now active with proctoring');
 }
 
 // Suspend exam for violation
 function suspendExam(reason) {
     if (examSuspended) return;
     
-    // Don't suspend if we're currently requesting screen share
-    if (isRequestingScreenShare) {
-        console.log('Ignoring suspension during screen share request');
+    // Don't suspend during readiness check
+    if (!examActive || !readinessCheckPassed) {
+        console.log('Ignoring suspension - readiness check not complete');
         return;
     }
     
@@ -444,7 +489,7 @@ function suspendExam(reason) {
 
 // Check for tab visibility change
 document.addEventListener('visibilitychange', function() {
-    if (examStarted && document.hidden && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
+    if (examActive && readinessCheckPassed && document.hidden && !examSuspended && !isRequestingScreenShare) {
         blurCount++;
         suspendExam('Tab switching detected');
     }
@@ -452,20 +497,25 @@ document.addEventListener('visibilitychange', function() {
 
 // Check for window blur (losing focus)
 window.addEventListener('blur', function() {
-    if (examStarted && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
-        // Small delay to allow for alert dialogs
-        setTimeout(() => {
-            if (!document.hasFocus() && examStarted && !examSuspended && !isRequestingScreenShare && examCheckComplete) {
+    if (examActive && readinessCheckPassed && !examSuspended && !isRequestingScreenShare) {
+        // Clear any existing timeout
+        if (blurCheckTimeout) {
+            clearTimeout(blurCheckTimeout);
+        }
+        
+        // Delay the check to allow for any dialogs
+        blurCheckTimeout = setTimeout(() => {
+            if (!document.hasFocus() && examActive && readinessCheckPassed && !examSuspended && !isRequestingScreenShare) {
                 blurCount++;
                 suspendExam('Window lost focus');
             }
-        }, 100);
+        }, 500);
     }
 });
 
 // Disable context menu (right-click)
 document.addEventListener('contextmenu', function(e) {
-    if (examStarted) {
+    if (examActive && readinessCheckPassed) {
         e.preventDefault();
         return false;
     }
@@ -473,21 +523,21 @@ document.addEventListener('contextmenu', function(e) {
 
 // Disable copy/paste
 document.addEventListener('copy', function(e) {
-    if (examStarted) {
+    if (examActive && readinessCheckPassed) {
         e.preventDefault();
         return false;
     }
 });
 
 document.addEventListener('paste', function(e) {
-    if (examStarted) {
+    if (examActive && readinessCheckPassed) {
         e.preventDefault();
         return false;
     }
 });
 
 document.addEventListener('cut', function(e) {
-    if (examStarted) {
+    if (examActive && readinessCheckPassed) {
         e.preventDefault();
         return false;
     }
@@ -495,7 +545,7 @@ document.addEventListener('cut', function(e) {
 
 // Disable keyboard shortcuts
 document.addEventListener('keydown', function(e) {
-    if (examStarted && !examSuspended) {
+    if (examActive && readinessCheckPassed && !examSuspended) {
         // Block Ctrl combinations (except Ctrl+R for refresh prevention)
         if (e.ctrlKey && ['c', 'v', 'x', 's', 'p', 'a'].includes(e.key.toLowerCase())) {
             e.preventDefault();
@@ -529,16 +579,10 @@ function startExam() {
     document.getElementById('welcomeScreen').style.display = 'none';
     document.getElementById('examScreen').style.display = 'block';
     
-    // Start screen recording
+    // Start screen recording first (this will trigger readiness check)
     startScreenRecording();
     
-    // Start timer only after screen recording check
-    setTimeout(() => {
-        startTimer();
-        examCheckComplete = true;
-    }, 1000); // Give 1 second for screen recording to initialize
-    
-    // Initialize exam
+    // Initialize exam UI (but don't activate proctoring yet)
     renderQuestion();
     renderQuestionGrid();
     updateProgress();
@@ -751,7 +795,7 @@ console.log('Total questions loaded:', examQuestions.length);
 
 // Prevent refresh during exam
 window.addEventListener('beforeunload', function(e) {
-    if (examStarted && !examSuspended) {
+    if (examActive && readinessCheckPassed && !examSuspended) {
         e.preventDefault();
         e.returnValue = 'Are you sure you want to leave? Your exam will be suspended!';
         return e.returnValue;
